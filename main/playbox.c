@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <math.h> // für sinf()
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -68,6 +69,9 @@
 #define ORB_FADE_MS 20
 #define ORB_BLINK_MS 250
 
+// Globale Variable für den Sinuswinkel
+static float orb_breath_angle = 0.0f;
+
 /* ===================== MODES ===================== */
 typedef enum
 {
@@ -115,10 +119,19 @@ typedef enum
     SONG_ODE = 0,
     SONG_HAPPY,
     SONG_HALLELUJAH,
+    SONG_ENTCHEN,
     SONG_COUNT
 } midi_song_t;
 
-static midi_song_t currentSong = SONG_HAPPY;
+static midi_song_t currentSong = SONG_ODE;
+
+typedef enum
+{
+    MIDI_WAIT, // Warten auf Button-Eingabe oder Liedstart
+    MIDI_PLAY, // Lied gerade abspielen
+    MIDI_NEXT, // Nächstes Lied
+    MIDI_PREV, // Vorheriges Lied
+} midi_state_t;
 
 /**
  * PlayTone - spielt einen Ton auf dem passiven Buzzer
@@ -228,6 +241,11 @@ void Play_current_song(void)
             melody_hallelujah_motif,
             melody_hallelujah_motif_len);
         break;
+    case SONG_ENTCHEN:
+        PlayToneSequence(
+            alle_meine_entchen,
+            alle_meine_entchen_len);
+        break;
 
     default:
         break;
@@ -270,33 +288,35 @@ typedef struct
 static orb_state_t orb = {0};
 
 /* ===================== ORB LED ===================== */
+
 void orb_update(void)
 {
     TickType_t now = xTaskGetTickCount();
 
-    // === Glow im Idle ===
+    // === Smooth Breath Effekt im Idle ===
     if (currentMode == IDLE_MODE)
     {
         if (now - orb.last_tick >= pdMS_TO_TICKS(ORB_FADE_MS))
         {
             orb.last_tick = now;
 
-            orb.duty += orb.fade_dir * ORB_FADE_STEP;
-            if (orb.duty >= ORB_PWM_MAX)
-            {
-                orb.duty = ORB_PWM_MAX;
-                orb.fade_dir = -1;
-            }
-            else if (orb.duty <= ORB_PWM_MIN)
-            {
-                orb.duty = ORB_PWM_MIN;
-                orb.fade_dir = 1;
-            }
+            // Sinuswert berechnen (0..1)
+            float sin_val = (sinf(orb_breath_angle) + 1.0f) / 2.0f;
 
+            // PWM Duty entsprechend Sinuswert skalieren
+            orb.duty = ORB_PWM_MIN + (uint16_t)(sin_val * (ORB_PWM_MAX - ORB_PWM_MIN));
+
+            // LED setzen
             ledc_set_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_7, orb.duty);
             ledc_update_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_7);
+
+            // Winkel für nächsten Schritt erhöhen
+            orb_breath_angle += 0.05f; // Geschwindigkeit anpassen (kleiner = langsamer)
+            if (orb_breath_angle > 2 * M_PI)
+                orb_breath_angle -= 2 * M_PI; // Wraparound
         }
-        return;
+
+        return; // kein Blinken
     }
 
     // === Blink bei Mode-Effekt ===
@@ -358,56 +378,158 @@ void mode_effects_trigger(void)
 
 /* ===================== MODI HANDLER ===================== */
 
-void HandleIdleMode(void) {
-    // Orb Glow Init
-    orb.fade_dir = 1;
-    orb.duty = ORB_PWM_MIN;
-    orb.last_tick = xTaskGetTickCount();
+void HandleIdleMode(void)
+{
+    static bool initialized = false;
 
-    // Blinken deaktivieren
-    orb.target_blinks = 0;
-    orb.blinks_done = 0;
+    if (!initialized)
+    {
+        // Orb Glow Init
+        orb.fade_dir = 1;
+        orb.duty = ORB_PWM_MIN;
+        orb.last_tick = xTaskGetTickCount();
+
+        // Blinken deaktivieren
+        orb.target_blinks = 0;
+        orb.blinks_done = 0;
+
+        initialized = true;
+    }
+
+    // Mode verlassen? Dann wieder initialisieren beim nächsten Idle-Eintritt
+    if (currentMode != IDLE_MODE)
+    {
+        initialized = false;
+    }
 }
 
 void HandleBeepMode(void)
 {
-    PlayToneSequence(beep_mode_tones, beep_mode_len);
-    orb.target_blinks = 1;
-    orb.blinks_done = 0;
+    static bool pieps_done = false;
+
+    // Mode verlassen? Dann Pieps-Flag zurücksetzen
+    if (currentMode != BEEP_MODE)
+    {
+        pieps_done = false;
+        return;
+    }
+
+    // Pieps nur einmal abspielen
+    if (!pieps_done)
+    {
+        PlayToneSequence(beep_mode_tones, beep_mode_len);
+
+        // Orb-Blinkwerte nur einmal setzen
+        orb.target_blinks = 1;
+        orb.blinks_done = 0;
+
+        pieps_done = true;
+    }
+
+    // Orb-Update erfolgt weiter zentral im Mainloop
 }
+
 
 void HandleMidiMode(void)
 {
-    // Hier kann man Songs wechseln oder andere MIDI-Logik
-    PlayToneSequence(midi_mode_tones, midi_mode_len);
-    orb.target_blinks = 2;
-    orb.blinks_done = 0;
+    static bool pieps_done = false;
 
-    while (sequence.active) {
-        buzzer_update();      // muss weiterlaufen, damit Töne spielen
-        ToneSequence_Update(); // auch Sequenz-Update
-        vTaskDelay(pdMS_TO_TICKS(10)); 
+    // ===== Pieps einmal pro Mode-Wechsel =====
+    if (!pieps_done)
+    {
+        PlayToneSequence(midi_mode_tones, midi_mode_len);
+        orb.target_blinks = 2;
+        orb.blinks_done = 0;
+        pieps_done = true;
     }
 
-    // Kleiner Delay nach Mode-Tönen, bevor MidiSongMode startet
-    vTaskDelay(pdMS_TO_TICKS(200)); // z.B. 200 ms Pause    
+    // ===== Prev/Next Edge-Detection =====
+    static int last_left_state = 1;
+    static int last_right_state = 1;
 
-    MidiSongMode();
+    int left_state = gpio_get_level(IN_P1_LEFT_PIN);
+    int right_state = gpio_get_level(IN_P1_RIGHT_PIN);
+
+    if (left_state == 0 && last_left_state == 1)
+    {
+        StopToneSequence();
+        currentSong = (currentSong - 1 + SONG_COUNT) % SONG_COUNT;
+        Play_current_song();
+    }
+
+    if (right_state == 0 && last_right_state == 1)
+    {
+        StopToneSequence();
+        currentSong = (currentSong + 1) % SONG_COUNT;
+        Play_current_song();
+    }
+
+    last_left_state = left_state;
+    last_right_state = right_state;
+
+    // ===== Laufende Sequenz / Orb Updates =====
+    buzzer_update();
+    ToneSequence_Update();
+    orb_update();
+
+    // ===== Mode verlassen? =====
+    if (currentMode != MIDI_MODE)
+    {
+        StopToneSequence();
+        orb.target_blinks = 0;
+        orb.blinks_done = 0;
+        pieps_done = false;
+        last_left_state = 1;
+        last_right_state = 1;
+    }
 }
 
 void HandleQuizmasterMode(void)
 {
-    PlayToneSequence(quizmaster_mode_tones, quizmaster_mode_len);
-    orb.target_blinks = 3;
-    orb.blinks_done = 0;
+    static bool pieps_done = false;
+
+    // Mode verlassen? Flag zurücksetzen
+    if (currentMode != QUIZMASTER_MODE)
+    {
+        pieps_done = false;
+        return;
+    }
+
+    // Pieps nur einmal abspielen
+    if (!pieps_done)
+    {
+        PlayToneSequence(quizmaster_mode_tones, quizmaster_mode_len);
+        orb.target_blinks = 3;
+        orb.blinks_done = 0;
+
+        pieps_done = true;
+    }
+    // Orb-Update läuft weiterhin zentral im Mainloop
 }
 
 void HandleTonleiterMode(void)
 {
-    PlayToneSequence(tonleiter_mode_tones, tonleiter_mode_len);
-    orb.target_blinks = 4;
-    orb.blinks_done = 0;
+    static bool pieps_done = false;
+
+    // Mode verlassen? Flag zurücksetzen
+    if (currentMode != TONLEITER_MODE)
+    {
+        pieps_done = false;
+        return;
+    }
+
+    // Pieps nur einmal abspielen
+    if (!pieps_done)
+    {
+        PlayToneSequence(tonleiter_mode_tones, tonleiter_mode_len);
+        orb.target_blinks = 4;
+        orb.blinks_done = 0;
+
+        pieps_done = true;
+    }
+    // Orb-Update läuft weiterhin zentral im Mainloop
 }
+
 
 /* ===================== PIN INIT ===================== */
 void init_pins(void)
@@ -533,72 +655,60 @@ void app_main(void)
 
     int last_switch = 1;
 
-
-
     /* ===== Startsong ===== */
-    // Play_current_song();
     PlayToneSequence(
-        win95_boot,
-        win95_boot_len);
+        win95_true_boot,
+        win95_true_boot_len);
 
     TickType_t last_log_tick = xTaskGetTickCount();
 
     while (true)
     {
-        ESP_LOGI("APP", "WHILE");
         TickType_t now = xTaskGetTickCount();
 
-        /* ===== Button: Edge Detect ===== */
+        // Mode-Button Edge Detect
         int state = gpio_get_level(IN_LED_PIN);
         if (state == 0 && last_switch == 1)
         {
-
-            /* --- Mode wechseln --- */
             currentMode = (currentMode + 1) % MODE_COUNT;
             ESP_LOGI("MODE", "Changed to %d", currentMode);
-            //mode_effects_trigger();
-
-            /* --- Song wechseln --- */
-            // currentSong = (currentSong + 1) % SONG_COUNT;
-            // ESP_LOGI("SONG", "Changed to %d", currentSong);
-            // Play_current_song();
-
-            switch (currentMode)
-            {
-            case IDLE_MODE:
-                HandleIdleMode();
-                break;
-            case BEEP_MODE:
-                HandleBeepMode();
-                break;
-            case MIDI_MODE:
-                HandleMidiMode();
-                break;
-            case QUIZMASTER_MODE:
-                HandleQuizmasterMode();
-                break;
-            case TONLEITER_MODE:
-                HandleTonleiterMode();
-                break;
-            default:
-                break; // MODE_COUNT oder ungültiger Wert
-            }
         }
+        // Handler einmalig aufrufen
+        switch (currentMode)
+        {
+        case IDLE_MODE:
+            HandleIdleMode();
+            break;
+        case BEEP_MODE:
+            HandleBeepMode();
+            break;
+        case MIDI_MODE:
+            HandleMidiMode();
+            break;
+        case QUIZMASTER_MODE:
+            HandleQuizmasterMode();
+            break;
+        case TONLEITER_MODE:
+            HandleTonleiterMode();
+            break;
+        default:
+            break;
+        }
+
         last_switch = state;
 
-        /* ===== Runtime Updates (non-blocking) ===== */
+        // ===== Runtime Updates zentral =====
         buzzer_update();
         ToneSequence_Update();
         orb_update();
 
-        /* ===== Optional: periodisches Loggen ===== */
+        // ===== Optional: periodisches Loggen =====
         if (now - last_log_tick >= pdMS_TO_TICKS(1000))
-        { // alle 1 Sekunde
+        {
             ESP_LOGI("APP", "Running... Mode=%d Song=%d", currentMode, currentSong);
             last_log_tick = now;
         }
 
-        /* ===== Kurzes Delay ===== */
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }

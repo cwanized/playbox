@@ -79,9 +79,7 @@ const tone_step_t boot_sequence_short[] = {
 };
 const int boot_sequence_short_len = sizeof(boot_sequence_short) / sizeof(tone_step_t);
 
-
-/* ================= Windows 95 Boot Sound ================= */
-const tone_step_t win95_boot[] = {
+const tone_step_t boot_sequence_fancy2[] = {
     { 523, 150 },  // C5
     { 659, 150 },  // E5
     { 784, 200 },  // G5
@@ -89,8 +87,53 @@ const tone_step_t win95_boot[] = {
     { 987, 200 },  // B5
     { 1047, 300 }, // C6 (Abschluss)
 };
-const int win95_boot_len = sizeof(win95_boot) / sizeof(tone_step_t);
+const int boot_sequence_fancy2_len = sizeof(boot_sequence_fancy2) / sizeof(tone_step_t);
 
+/* ================= Windows 95 Boot Sound ================= */
+const tone_step_t win95_boot[] = {
+    { 800, 130 },  // kräftiger Ton (ungefähr ~G5/Bb5 Intervallanfang)
+    { 660, 260 },  // tiefer Ton als Auflösung (~E5‑ish)
+    { 0,   150 }   // kurzer Stille‑Puffer zum Ausklingen
+};
+
+const int win95_boot_len =
+    sizeof(win95_boot) / sizeof(tone_step_t);
+
+
+const tone_step_t win95_speak_boot[] = {
+    { 659, 150 },  // E5 – kurzer Startton ("ta")
+    { 784, 150 },  // G5 – kurzer Mittelton ("ta")
+    { 987, 500 },  // B5 – langer Abschluss ("taaa")
+    { 784, 200 },  // G5 – leichtes Nachklingen
+    { 659, 300 },  // E5 – Ruhepunkt / Abschluss
+};
+
+const int win95_speak_boot_len =
+    sizeof(win95_speak_boot) / sizeof(tone_step_t);
+
+const tone_step_t win95_true_boot[] = {
+    { 523, 150 },  // C5 – kurzer Startton "ta"
+    { 659, 150 },  // E5 – kurzer Mittelton "ta"
+    { 784, 500 },  // G5 – langer Abschluss "taaa"
+    { 659, 200 },  // E5 – leichtes Nachklingen
+    { 523, 300 },  // C5 – ruhiger Abschluss
+};
+
+const int win95_true_boot_len =
+    sizeof(win95_true_boot) / sizeof(tone_step_t);    
+
+
+const tone_step_t custom_boot[] = {
+    { 523, 150 },  // C5 – kurzer Startton
+    { 659, 200 },  // E5 – zweite Stufe
+    { 784, 400 },  // G5 – Akkordabschluss
+    { 880, 300 },  // A5 – finaler Aufstieg
+    { 784, 250 },  // G5 – leichtes „Abklingen“
+    { 659, 250 },  // E5 – sanft zurück
+    { 523, 300 }   // C5 – Ruhepunkt / Ende
+};
+const int custom_boot_len =
+    sizeof(custom_boot) / sizeof(tone_step_t);
 
 
 /* ================= Ode an die Freude ================= */
@@ -151,3 +194,27 @@ const tone_step_t melody_hallelujah_motif[] = {
 
 const int melody_hallelujah_motif_len =
     sizeof(melody_hallelujah_motif) / sizeof(tone_step_t);
+
+    /* ==================== Alle meine Entchen ==================== */
+
+const tone_step_t alle_meine_entchen[] = {
+    { 523, 400 },  // C5 – Alle
+    { 523, 400 },  // C5 – mei-
+    { 587, 400 },  // D5 – ne
+    { 659, 400 },  // E5 – Ent-
+    { 659, 400 },  // E5 – chen
+    { 587, 400 },  // D5 – schwim-
+    { 523, 400 },  // C5 – men
+    { 523, 400 },  // C5 – auf
+    { 392, 400 },  // G4 – dem
+    { 392, 400 },  // G4 – See
+    { 440, 400 },  // A4 – Köpf-
+    { 392, 400 },  // G4 – fen
+    { 440, 400 },  // A4 – und
+    { 392, 400 },  // G4 – Schwänz-
+    { 349, 400 },  // F4 – chen
+    { 330, 600 }   // E4 – weiß
+};
+
+const int alle_meine_entchen_len =
+    sizeof(alle_meine_entchen) / sizeof(tone_step_t);
