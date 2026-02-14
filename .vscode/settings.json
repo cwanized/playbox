@@ -3,13 +3,14 @@
   "files.associations": {
     "ledc.h": "c"
   },
-  "idf.portWin": "COM3",
+  "idf.portWin": "COM4",
   "idf.flashType": "UART",
   "idf.pythonInstallPath": "D:\\IDE\\esp\\esp-idf-tools\\tools\\idf-python\\3.8.7\\python.exe",
   "idf.espIdfPathWin": "D:/IDE/esp/esp-idf/",
   "idf.toolsPathWin": "D:\\IDE\\esp\\esp-idf-tools",
   "idf.customExtraVars": {
     "OPENOCD_SCRIPTS": "d:\\IDE\\esp\\esp-idf-tools\\tools\\openocd-esp32\\v0.11.0-esp32-20211220/openocd-esp32/share/openocd/scripts",
-    "IDF_CCACHE_ENABLE": "1"
+    "IDF_CCACHE_ENABLE": "1",
+    "IDF_TARGET": "esp32"
   }
 }

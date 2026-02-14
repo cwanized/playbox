@@ -68,9 +68,14 @@
 #define ORB_FADE_STEP 20
 #define ORB_FADE_MS 20
 #define ORB_BLINK_MS 250
+#define ORB_BEEP_BLINK_MS 100
 
 // Globale Variable für den Sinuswinkel
 static float orb_breath_angle = 0.0f;
+
+static bool quizmaster_triggered = false;
+static int last_p1_state = 1;
+static int last_p2_state = 1;
 
 /* ===================== MODES ===================== */
 typedef enum
@@ -84,6 +89,10 @@ typedef enum
 } Mode;
 
 volatile Mode currentMode = IDLE_MODE;
+
+// Array mit Flags pro Mode, um Pieps/Sequenz nur einmal auszulösen
+static bool mode_done_flags[MODE_COUNT] = {0};
+
 
 /* ===================== BUZZER STATE ===================== */
 typedef struct
@@ -300,81 +309,169 @@ void orb_update(void)
         {
             orb.last_tick = now;
 
-            // Sinuswert berechnen (0..1)
             float sin_val = (sinf(orb_breath_angle) + 1.0f) / 2.0f;
-
-            // PWM Duty entsprechend Sinuswert skalieren
             orb.duty = ORB_PWM_MIN + (uint16_t)(sin_val * (ORB_PWM_MAX - ORB_PWM_MIN));
 
-            // LED setzen
             ledc_set_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_7, orb.duty);
             ledc_update_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_7);
 
-            // Winkel für nächsten Schritt erhöhen
-            orb_breath_angle += 0.05f; // Geschwindigkeit anpassen (kleiner = langsamer)
+            orb_breath_angle += 0.05f;
             if (orb_breath_angle > 2 * M_PI)
-                orb_breath_angle -= 2 * M_PI; // Wraparound
+                orb_breath_angle -= 2 * M_PI;
         }
 
-        return; // kein Blinken
+        return; // kein weiterer Blinkcode
     }
 
-    // === Blink bei Mode-Effekt ===
-    if (orb.blinks_done >= orb.target_blinks)
-        return;
-
-    if (now - orb.last_tick >= pdMS_TO_TICKS(ORB_BLINK_MS))
+    // Andere Modes außer BEEP_MODE: Blinkverhalten
+    if (currentMode != BEEP_MODE)
     {
-        orb.last_tick = now;
-        orb.led_on = !orb.led_on;
-        ledc_set_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_7, orb.led_on ? ORB_PWM_MAX : 0);
-        ledc_update_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_7);
+        if (orb.blinks_done >= orb.target_blinks)
+            return;
 
-        if (!orb.led_on)
-            orb.blinks_done++;
+        if (now - orb.last_tick >= pdMS_TO_TICKS(ORB_BLINK_MS))
+        {
+            orb.last_tick = now;
+            orb.led_on = !orb.led_on;
+            ledc_set_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_7, orb.led_on ? ORB_PWM_MAX : 0);
+            ledc_update_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_7);
+
+            if (!orb.led_on)
+                orb.blinks_done++;
+        }
     }
 }
+
+
 
 // === Mode-Effekt Trigger anpassen ===
 void mode_effects_trigger(void)
 {
+    orb.blinks_done = 0;
+    orb.last_tick = xTaskGetTickCount();
+
+    // Alle Mode-Flags zurücksetzen
+    for (int i = 0; i < MODE_COUNT; i++)
+        mode_done_flags[i] = false;
+
     switch (currentMode)
     {
-    case IDLE_MODE:
-        orb.target_blinks = 0;
-        orb.blinks_done = 0;
-        orb.fade_dir = 1;
-        orb.duty = ORB_PWM_MIN;
-        break;
-
-    case BEEP_MODE:
-
-        orb.target_blinks = 1;
-        orb.blinks_done = 0;
-        break;
-
-    case MIDI_MODE:
-
-        orb.target_blinks = 2;
-        orb.blinks_done = 0;
-        break;
-
-    case QUIZMASTER_MODE:
-
-        orb.target_blinks = 3;
-        orb.blinks_done = 0;
-        break;
-
-    case TONLEITER_MODE:
-
-        orb.target_blinks = 4;
-        orb.blinks_done = 0;
-        break;
-
-    default:
-        break;
+        case IDLE_MODE:        orb.target_blinks = 0; break;
+        case BEEP_MODE:        orb.target_blinks = 1; break;
+        case MIDI_MODE:        orb.target_blinks = 2; break;
+        case QUIZMASTER_MODE:  orb.target_blinks = 3; break;
+        case TONLEITER_MODE:   orb.target_blinks = 4; break;
+        default:               orb.target_blinks = 0; break;
     }
 }
+
+/* ===================== MODI Implemenation ===================== */
+
+void BeepMode(void)
+{
+    // Array mit Pins für P1 und P2
+    const gpio_num_t pins[10] = {
+        IN_P1_TOP_PIN, IN_P1_DOWN_PIN, IN_P1_LEFT_PIN, IN_P1_RIGHT_PIN, IN_P1_FIRE_PIN,
+        IN_P2_TOP_PIN, IN_P2_DOWN_PIN, IN_P2_LEFT_PIN, IN_P2_RIGHT_PIN, IN_P2_FIRE_PIN
+    };
+
+    // Frequenzen für jeden Button
+    const uint32_t freqs[10] = {
+        262, 294, 330, 349, 392,   // P1: C4, D4, E4, F4, G4
+        440, 494, 523, 587, 659    // P2: A4, B4, C5, D5, E5
+    };
+
+    static int last_state[10] = {1,1,1,1,1,1,1,1,1,1};
+    static TickType_t beep_orb_end_tick = 0;
+
+    TickType_t now = xTaskGetTickCount();
+
+    for (int i = 0; i < 10; i++)
+    {
+        int state = gpio_get_level(pins[i]);
+
+        // Edge Detect: Button gedrückt
+        if (state == 0 && last_state[i] == 1)
+        {
+            PlayTone(freqs[i], 200); // Ton abspielen
+
+            // ORB LED direkt einschalten
+            ledc_set_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_7, ORB_PWM_MAX);
+            ledc_update_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_7);
+
+            // Timer für LED ausschalten setzen
+            beep_orb_end_tick = now + pdMS_TO_TICKS(ORB_BEEP_BLINK_MS);
+        }
+
+        last_state[i] = state;
+    }
+
+    // LED nach Ablauf ausschalten
+    if (beep_orb_end_tick != 0 && now >= beep_orb_end_tick)
+    {
+        ledc_set_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_7, 0);
+        ledc_update_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_7);
+        beep_orb_end_tick = 0;
+    }
+}
+
+void QuizmasterMode(void)
+{
+    static TickType_t quiz_orb_end_tick = 0;
+    static uint16_t current_duty = 0;  // aktueller PWM-Wert
+    TickType_t now = xTaskGetTickCount();
+
+    int p1_state = gpio_get_level(IN_P1_TOP_PIN);
+    int p2_state = gpio_get_level(IN_P2_TOP_PIN);
+
+    // --- Edge Detect Player 1 ---
+    if (p1_state == 0 && last_p1_state == 1 && !quizmaster_triggered)
+    {
+        PlayTone(523, 300);
+        quizmaster_triggered = true;
+        current_duty = ORB_PWM_MAX;
+        ledc_set_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_7, current_duty);
+        ledc_update_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_7);
+        quiz_orb_end_tick = now + pdMS_TO_TICKS(ORB_BEEP_BLINK_MS);
+    }
+
+    // --- Edge Detect Player 2 ---
+    if (p2_state == 0 && last_p2_state == 1 && !quizmaster_triggered)
+    {
+        PlayTone(659, 300);
+        quizmaster_triggered = true;
+        current_duty = ORB_PWM_MAX;
+        ledc_set_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_7, current_duty);
+        ledc_update_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_7);
+        quiz_orb_end_tick = now + pdMS_TO_TICKS(ORB_BEEP_BLINK_MS);
+    }
+
+    // --- LED sanft ausfaden ---
+    if (quiz_orb_end_tick != 0 && now >= quiz_orb_end_tick)
+    {
+        if (current_duty > ORB_FADE_STEP)
+            current_duty -= ORB_FADE_STEP;
+        else
+            current_duty = 0;
+
+        ledc_set_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_7, current_duty);
+        ledc_update_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_7);
+
+        if (current_duty == 0)
+        {
+            quiz_orb_end_tick = 0;
+            quizmaster_triggered = false; // Reset für nächste Frage
+        }
+    }
+
+    last_p1_state = p1_state;
+    last_p2_state = p2_state;
+}
+
+
+
+
+
 
 /* ===================== MODI HANDLER ===================== */
 
@@ -384,68 +481,53 @@ void HandleIdleMode(void)
 
     if (!initialized)
     {
-        // Orb Glow Init
         orb.fade_dir = 1;
         orb.duty = ORB_PWM_MIN;
         orb.last_tick = xTaskGetTickCount();
-
-        // Blinken deaktivieren
         orb.target_blinks = 0;
         orb.blinks_done = 0;
-
         initialized = true;
     }
 
-    // Mode verlassen? Dann wieder initialisieren beim nächsten Idle-Eintritt
     if (currentMode != IDLE_MODE)
-    {
         initialized = false;
-    }
 }
 
 void HandleBeepMode(void)
 {
-    static bool pieps_done = false;
-
-    // Mode verlassen? Dann Pieps-Flag zurücksetzen
-    if (currentMode != BEEP_MODE)
-    {
-        pieps_done = false;
-        return;
-    }
-
-    // Pieps nur einmal abspielen
-    if (!pieps_done)
+    if (!mode_done_flags[BEEP_MODE])
     {
         PlayToneSequence(beep_mode_tones, beep_mode_len);
-
-        // Orb-Blinkwerte nur einmal setzen
         orb.target_blinks = 1;
         orb.blinks_done = 0;
-
-        pieps_done = true;
+        mode_done_flags[BEEP_MODE] = true;
     }
 
-    // Orb-Update erfolgt weiter zentral im Mainloop
+    BeepMode();
 }
-
 
 void HandleMidiMode(void)
 {
-    static bool pieps_done = false;
+    static int last_left_state = 1;
+    static int last_right_state = 1;
 
-    // ===== Pieps einmal pro Mode-Wechsel =====
-    if (!pieps_done)
+    if (currentMode != MIDI_MODE)
+    {
+        last_left_state = 1;
+        last_right_state = 1;
+        StopToneSequence();
+        orb.blinks_done = 0;
+        orb.target_blinks = 0;
+        return;
+    }
+
+    if (!mode_done_flags[MIDI_MODE])
     {
         PlayToneSequence(midi_mode_tones, midi_mode_len);
         orb.target_blinks = 2;
         orb.blinks_done = 0;
-        pieps_done = true;
+        mode_done_flags[MIDI_MODE] = true;
     }
-
-    // ===== Prev/Next Edge-Detection =====
-    static int last_left_state = 1;
-    static int last_right_state = 1;
 
     int left_state = gpio_get_level(IN_P1_LEFT_PIN);
     int right_state = gpio_get_level(IN_P1_RIGHT_PIN);
@@ -466,68 +548,34 @@ void HandleMidiMode(void)
 
     last_left_state = left_state;
     last_right_state = right_state;
-
-    // ===== Laufende Sequenz / Orb Updates =====
-    buzzer_update();
-    ToneSequence_Update();
-    orb_update();
-
-    // ===== Mode verlassen? =====
-    if (currentMode != MIDI_MODE)
-    {
-        StopToneSequence();
-        orb.target_blinks = 0;
-        orb.blinks_done = 0;
-        pieps_done = false;
-        last_left_state = 1;
-        last_right_state = 1;
-    }
 }
 
 void HandleQuizmasterMode(void)
 {
-    static bool pieps_done = false;
-
-    // Mode verlassen? Flag zurücksetzen
-    if (currentMode != QUIZMASTER_MODE)
+    if (!mode_done_flags[QUIZMASTER_MODE])
     {
-        pieps_done = false;
-        return;
-    }
-
-    // Pieps nur einmal abspielen
-    if (!pieps_done)
-    {
-        PlayToneSequence(quizmaster_mode_tones, quizmaster_mode_len);
+        PlayToneSequence(quizmaster_mode_tones, quizmaster_mode_len); // Intro
         orb.target_blinks = 3;
         orb.blinks_done = 0;
+        mode_done_flags[QUIZMASTER_MODE] = true;
 
-        pieps_done = true;
+        quizmaster_triggered = false; // Reset für neue Frage
+        last_p1_state = 1;
+        last_p2_state = 1;
     }
-    // Orb-Update läuft weiterhin zentral im Mainloop
+
+    QuizmasterMode();
 }
 
 void HandleTonleiterMode(void)
 {
-    static bool pieps_done = false;
-
-    // Mode verlassen? Flag zurücksetzen
-    if (currentMode != TONLEITER_MODE)
-    {
-        pieps_done = false;
-        return;
-    }
-
-    // Pieps nur einmal abspielen
-    if (!pieps_done)
+    if (!mode_done_flags[TONLEITER_MODE])
     {
         PlayToneSequence(tonleiter_mode_tones, tonleiter_mode_len);
         orb.target_blinks = 4;
         orb.blinks_done = 0;
-
-        pieps_done = true;
+        mode_done_flags[TONLEITER_MODE] = true;
     }
-    // Orb-Update läuft weiterhin zentral im Mainloop
 }
 
 
@@ -672,7 +720,10 @@ void app_main(void)
         {
             currentMode = (currentMode + 1) % MODE_COUNT;
             ESP_LOGI("MODE", "Changed to %d", currentMode);
+            mode_effects_trigger();   /* <-- FIX */
         }
+
+        last_switch = state; /* <-- FIX: immer updaten */
         // Handler einmalig aufrufen
         switch (currentMode)
         {
@@ -695,7 +746,7 @@ void app_main(void)
             break;
         }
 
-        last_switch = state;
+        //last_switch = state;
 
         // ===== Runtime Updates zentral =====
         buzzer_update();
